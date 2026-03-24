@@ -28,10 +28,24 @@ public class PotYRotation : MonoBehaviour
     [Tooltip("When checked, invert rotation direction (angle decreases as potentiometer increases)")]
     public bool invertDirection = false;
 
+    [Header("Jitter Filter")]
+    [Tooltip("最小一次变化角度，小于该值则忽略（度）。0 表示不启用。")]
+    public float minAngleStep = 0f;
+
     [Header("Optional: Smoothing")]
     [Tooltip("When > 0, smooth interpolation is applied to rotation")]
     [Range(0f, 20f)]
     public float smoothSpeed = 0f;
+
+    [Header("MouseWheel Fallback (No Arduino)")]
+    [Tooltip("串口未连接或一段时间内没有收到 Arduino 数据时，用鼠标滚轮控制 Y 旋转。")]
+    public bool enableMouseWheelFallback = true;
+
+    [Tooltip("每个滚轮单位对应的 Y 角度增量（度）。")]
+    public float wheelAngleStep = 30f;
+
+    [Tooltip("多久内没有收到数据就认为“无 Arduino 数据”。")]
+    public float arduinoNoDataTimeout = 0.5f;
 
     [Header("Debug")]
     public bool showRotationDebug = true;
@@ -73,9 +87,32 @@ public class PotYRotation : MonoBehaviour
     void Update()
     {
         if (!_startOk || _targetTransform == null) return;
+
+        if (enableMouseWheelFallback && ShouldUseMouseWheelFallback())
+        {
+            float scroll = Input.mouseScrollDelta.y;
+            if (Mathf.Abs(scroll) > 0.0001f)
+            {
+                _currentAngleY += scroll * wheelAngleStep; // up -> increase, down -> decrease
+
+                float low = Mathf.Min(minAngleY, maxAngleY);
+                float high = Mathf.Max(minAngleY, maxAngleY);
+                _currentAngleY = Mathf.Clamp(_currentAngleY, low, high);
+
+                ApplyRotation(_currentAngleY);
+            }
+            return;
+        }
+
         float t = GetNormalizedValue();
         if (invertDirection) t = 1f - t;
         float targetAngleY = Mathf.Lerp(minAngleY, maxAngleY, t);
+        if (minAngleStep > 0f)
+        {
+            float deltaToTarget = Mathf.DeltaAngle(_currentAngleY, targetAngleY);
+            if (Mathf.Abs(deltaToTarget) < minAngleStep)
+                return;
+        }
         _currentAngleY = smoothSpeed > 0f ? Mathf.LerpAngle(_currentAngleY, targetAngleY, smoothSpeed * Time.deltaTime) : targetAngleY;
         ApplyRotation(_currentAngleY);
     }
@@ -95,17 +132,41 @@ public class PotYRotation : MonoBehaviour
 
     string GetSourceLabel()
     {
+        if (enableMouseWheelFallback && ShouldUseMouseWheelFallback())
+            return "MouseWheel";
+
         if (!useInputSystem || potentiometerAction == null) return potInput != null ? "ArduinoPot" : "None";
         float fromAction = Mathf.Clamp01(potentiometerAction.action.ReadValue<float>());
         return fromAction > 0f ? "InputSystem" : (potInput != null ? "ArduinoPot(fallback)" : "InputSystem=0");
     }
 
+    bool ShouldUseMouseWheelFallback()
+    {
+        return potInput == null || !potInput.IsConnected || !potInput.HasReceivedRecently(arduinoNoDataTimeout);
+    }
+
     void OnGUI()
     {
-        if (!showRotationDebug || !_startOk) return;
-        float t = GetNormalizedValue();
-        if (invertDirection) t = 1f - t;
-        float angleY = Mathf.Lerp(minAngleY, maxAngleY, t);
+        if (!showRotationDebug || !_startOk || _targetTransform == null) return;
+
+        bool usingWheel = enableMouseWheelFallback && ShouldUseMouseWheelFallback();
+        float t;
+        float angleY;
+
+        if (usingWheel)
+        {
+            angleY = _currentAngleY;
+            float low = Mathf.Min(minAngleY, maxAngleY);
+            float high = Mathf.Max(minAngleY, maxAngleY);
+            t = high > low ? Mathf.InverseLerp(low, high, angleY) : 0f;
+        }
+        else
+        {
+            t = GetNormalizedValue();
+            if (invertDirection) t = 1f - t;
+            angleY = Mathf.Lerp(minAngleY, maxAngleY, t);
+        }
+
         string targetName = _targetTransform != null ? _targetTransform.name : "?";
         GUI.Label(new Rect(10, 120, 320, 60), $"[PotYRotation]\nSource: {GetSourceLabel()}  Normalized: {t:F3}  Target angle Y: {angleY:F1}°\nRotating: {targetName}");
     }

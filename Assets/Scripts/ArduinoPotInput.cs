@@ -57,6 +57,21 @@ public class ArduinoPotInput : MonoBehaviour
     static bool _reflectionResolved;
     static readonly char[] NewlineChars = { '\r', '\n' };
 
+    /// <summary> True 表示串口已成功打开。 </summary>
+    public bool IsConnected => _connected;
+
+    /// <summary>
+    /// True 表示在最近一段时间内收到了 Arduino 的有效数据并更新了归一化值。
+    /// 用于“断连/无数据”判断回退输入。
+    /// </summary>
+    /// <param name="seconds">最近数据的时间窗口（秒）。</param>
+    public bool HasReceivedRecently(float seconds = 0.5f)
+    {
+        if (_lastReceivedTime < 0f) return false;
+        seconds = Mathf.Max(0f, seconds);
+        return (Time.time - _lastReceivedTime) <= seconds;
+    }
+
     static void ResolveSerialPortType()
     {
         if (_reflectionResolved) return;
@@ -195,8 +210,9 @@ public class ArduinoPotInput : MonoBehaviour
         }
         catch (Exception e)
         {
-            Debug.LogError($"[ArduinoPot] Failed to open {portName}: " + e.Message);
+            _serial = null;
             _connected = false;
+            Debug.LogWarning($"[ArduinoPot] 未检测到 Arduino（{portName} 打开失败）。已自动启用兼容输入：方向键移动、鼠标滚轮控制旋转。\n" + e.Message);
         }
     }
 

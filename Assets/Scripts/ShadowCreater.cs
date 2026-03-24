@@ -19,6 +19,12 @@ public class ShadowCreater : MonoBehaviour
     [Tooltip("勾选后每帧根据 LightReference 相对位置重新计算并更新阴影 Collider 的位置与形状")]
     public bool updateRealtime = true;
 
+    [Tooltip("阴影碰撞体所在 GameObject 的 Tag（例如 Shadow）。玩家侧用 PlayerShadowSpeedModifier 按该 Tag 检测。")]
+    public string shadowTag = "Shadow";
+
+    [Tooltip("阴影物体使用的 Layer 名称（在 Edit > Project Settings > Tags and Layers 的 Layers 里新建，例如 Shadow）。留空则不改 Layer。生成时自动赋给 ShadowCollider。")]
+    public string shadowLayerName = "Shadow";
+
     private GameObject _shadowObject;
     private Mesh _shadowMesh;
     private MeshCollider _shadowMeshCollider;
@@ -83,11 +89,11 @@ public class ShadowCreater : MonoBehaviour
                 }
             }
 
-            // 有顶点在 maxRayDistance 内未命中 Ground：若已有阴影物体则保持上一帧状态，不销毁
-            return;
+            // 该顶点未能命中 Ground：跳过即可（尽量生成，而不是要求 8 个顶点都命中）
         }
 
-        if (hitPoints.Count != worldVertices.Length) return;
+        // 至少需要 3 个点才能生成三角形网格
+        if (hitPoints.Count < 3) return;
 
         if (_shadowObject == null)
             CreateColliderAtHitPoints(hitPoints);
@@ -158,7 +164,40 @@ public class ShadowCreater : MonoBehaviour
 
         _shadowMeshCollider = _shadowObject.AddComponent<MeshCollider>();
         _shadowMeshCollider.sharedMesh = _shadowMesh;
-        _shadowMeshCollider.convex = false; // 方案A：使用非凸网格，使碰撞体完全贴合阴影形状（推荐仅用于静态几何）
+        // 非凸网格不能作为 Trigger（Unity 限制），需 isTrigger=false。若不想与玩家发生实体碰撞，请用 Layer 在 Physics 碰撞矩阵中忽略与 Player 的碰撞。
+        _shadowMeshCollider.convex = false;
+        _shadowMeshCollider.isTrigger = false;
+
+        TrySetShadowTag(_shadowObject, shadowTag);
+        TrySetShadowLayer(_shadowObject, shadowLayerName);
+    }
+
+    static void TrySetShadowLayer(GameObject go, string layerName)
+    {
+        if (go == null || string.IsNullOrEmpty(layerName)) return;
+        int layer = LayerMask.NameToLayer(layerName);
+        if (layer < 0)
+        {
+            Debug.LogWarning(
+                "ShadowCreater: Layer \"" + layerName + "\" 不存在。请在 Edit > Project Settings > Tags and Layers 的 Layers 中新建该层，或清空 shadowLayerName。");
+            return;
+        }
+
+        go.layer = layer;
+    }
+
+    static void TrySetShadowTag(GameObject go, string tagName)
+    {
+        if (go == null || string.IsNullOrEmpty(tagName)) return;
+        try
+        {
+            go.tag = tagName;
+        }
+        catch (UnityException)
+        {
+            Debug.LogWarning(
+                "ShadowCreater: Tag \"" + tagName + "\" 未在 Edit > Project Settings > Tags and Layers 中定义，无法赋给阴影物体。请添加该 Tag 或在 Inspector 里把 shadowTag 改成已有 Tag。");
+        }
     }
 
     /// <summary>
@@ -177,7 +216,7 @@ public class ShadowCreater : MonoBehaviour
         _shadowMesh.RecalculateNormals();
 
         _shadowObject.transform.position = center;
-        _shadowMeshCollider.sharedMesh = null;
+        // 不要每帧 sharedMesh=null 再赋值：会打断 Trigger 的重叠状态，导致 OnTriggerExit 经常不触发。
         _shadowMeshCollider.sharedMesh = _shadowMesh;
     }
 
