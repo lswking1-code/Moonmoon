@@ -1,166 +1,126 @@
 using UnityEngine;
 
 /// <summary>
-/// Reads Arduino joystick (joyX, joyY from PotForUnity.ino) to control object movement.
-/// Works with ArduinoPotInput: attach ArduinoPotInput on the same GameObject or a child, or assign potInput manually.
+/// Moves using Arduino joystick (JoyX/JoyY from PotForUnity.ino) via ArduinoPotInput, plus optional WASD/arrows.
 /// </summary>
 public class JoystickMovement : MonoBehaviour
 {
-    [Header("Joystick Data Source")]
+    [Header("Source")]
     public ArduinoPotInput potInput;
 
-    [Header("Movement Settings")]
+    [Header("Movement")]
     public float moveSpeed = 5f;
-
     public MovementPlane movementPlane = MovementPlane.XZ;
-
-    [Header("Jitter Filter")]
-    [Tooltip("最小摇杆输入幅度，小于该值则忽略（0~1，0 表示不启用）。")]
     [Range(0f, 1f)]
     public float minInputMagnitude = 0f;
-
-    [Tooltip("Use world axis for movement (otherwise use object's local orientation)")]
     public bool useWorldAxis = true;
 
-    [Header("Rigidbody Movement")]
-    [Tooltip("When present, movement will be done via Rigidbody.MovePosition in FixedUpdate.")]
+    [Header("Rigidbody")]
     public bool useRigidbodyMovement = true;
-
-    [Tooltip("If no Rigidbody found and this is enabled, will fall back to transform.position movement.")]
     public bool fallbackToTransformWhenNoRigidbody = true;
 
-    [Header("Keyboard Input")]
-    [Tooltip("启用键盘移动输入（WASD + 方向键）。会与 Arduino 摇杆输入叠加。")]
+    [Header("Keyboard")]
     public bool enableKeyboardInput = true;
-
-    [Tooltip("多久内没有收到数据就认为“无 Arduino 数据”。")]
     public float arduinoNoDataTimeout = 0.5f;
 
-    [Header("Optional Bounds")]
-    [Tooltip("Clamp position within the specified range")]
-    public bool clampPosition = false;
+    [Header("Facing")]
+    public bool faceMovementDirection = true;
+    public float faceRotationSpeedDegPerSec = 540f;
 
+    [Header("Bounds")]
+    public bool clampPosition = false;
     public Vector3 positionMin = new Vector3(-10f, 0f, -10f);
     public Vector3 positionMax = new Vector3(10f, 0f, 10f);
+
+    [Header("Animator")]
+    public Animator animator;
+    public string speedParameterName = "Speed";
 
     public enum MovementPlane { XZ, XY }
 
     Rigidbody _rb;
-    Vector3 _pendingMoveDir = Vector3.zero;
+    Vector3 _pendingMoveDir;
     bool _hasMoveInput;
+    int _speedParamHash;
 
     void Start()
     {
-        if (potInput == null)
-            potInput = GetComponentInChildren<ArduinoPotInput>();
+        potInput ??= GetComponentInChildren<ArduinoPotInput>();
         if (potInput == null)
             Debug.LogError("[JoystickMovement] ArduinoPotInput not found. Attach it or assign potInput.");
 
         if (useRigidbodyMovement)
         {
-            _rb = GetComponent<Rigidbody>();
-            if (_rb == null) _rb = GetComponentInChildren<Rigidbody>();
-
+            _rb = GetComponent<Rigidbody>() ?? GetComponentInChildren<Rigidbody>();
             if (_rb == null)
             {
-                Debug.LogError("[JoystickMovement] Rigidbody not found but `useRigidbodyMovement` is enabled. " +
-                               "Add a Rigidbody to the moving GameObject (or child), or disable `useRigidbodyMovement`.");
-                if (!fallbackToTransformWhenNoRigidbody)
-                {
-                    enabled = false;
-                    return;
-                }
+                Debug.LogError("[JoystickMovement] Rigidbody required when useRigidbodyMovement is on, or turn it off.");
+                if (!fallbackToTransformWhenNoRigidbody) { enabled = false; return; }
             }
         }
+
+        if (!string.IsNullOrEmpty(speedParameterName))
+            _speedParamHash = Animator.StringToHash(speedParameterName);
+        animator ??= GetComponent<Animator>() ?? GetComponentInChildren<Animator>();
     }
 
     void Update()
     {
-        bool hasArduinoJoy = potInput != null && potInput.IsConnected && potInput.HasReceivedRecently(arduinoNoDataTimeout);
+        bool live = potInput != null && potInput.IsConnected && potInput.HasReceivedRecently(arduinoNoDataTimeout);
+        float ax = live ? potInput.JoyX : 0f;
+        float ay = live ? potInput.JoyY : 0f;
 
-        float arduinoX = hasArduinoJoy ? potInput.JoyX : 0f;
-        float arduinoY = hasArduinoJoy ? potInput.JoyY : 0f;
-
-        float keyboardX = 0f;
-        float keyboardY = 0f;
+        float kx = 0f, ky = 0f;
         if (enableKeyboardInput)
         {
-            // WASD + Arrow 共同控制（相反方向可互相抵消）
-            keyboardX =
-                (Input.GetKey(KeyCode.RightArrow) ? 1f : 0f) +
-                (Input.GetKey(KeyCode.LeftArrow) ? -1f : 0f) +
-                (Input.GetKey(KeyCode.D) ? 1f : 0f) +
-                (Input.GetKey(KeyCode.A) ? -1f : 0f);
-            keyboardY =
-                (Input.GetKey(KeyCode.UpArrow) ? 1f : 0f) +
-                (Input.GetKey(KeyCode.DownArrow) ? -1f : 0f) +
-                (Input.GetKey(KeyCode.W) ? 1f : 0f) +
-                (Input.GetKey(KeyCode.S) ? -1f : 0f);
+            float Axis(KeyCode neg, KeyCode pos) => (Input.GetKey(pos) ? 1f : 0f) + (Input.GetKey(neg) ? -1f : 0f);
+            kx = Axis(KeyCode.A, KeyCode.D) + Axis(KeyCode.LeftArrow, KeyCode.RightArrow);
+            ky = Axis(KeyCode.S, KeyCode.W) + Axis(KeyCode.DownArrow, KeyCode.UpArrow);
         }
 
-        float joyX = Mathf.Clamp(arduinoX + keyboardX, -1f, 1f);
-        float joyY = Mathf.Clamp(arduinoY + keyboardY, -1f, 1f);
+        float joyX = Mathf.Clamp(ax + kx, -1f, 1f);
+        float joyY = Mathf.Clamp(ay + ky, -1f, 1f);
 
-        Vector3 moveDir;
-        if (useWorldAxis)
-        {
-            if (movementPlane == MovementPlane.XZ)
-                moveDir = new Vector3(joyX, 0f, joyY);
-            else
-                moveDir = new Vector3(joyX, joyY, 0f);
-        }
-        else
-        {
-            if (movementPlane == MovementPlane.XZ)
-                moveDir = transform.TransformDirection(new Vector3(joyX, 0f, joyY));
-            else
-                moveDir = transform.TransformDirection(new Vector3(joyX, joyY, 0f));
-        }
+        Vector3 local = movementPlane == MovementPlane.XZ
+            ? new Vector3(joyX, 0f, joyY)
+            : new Vector3(joyX, joyY, 0f);
+        Vector3 moveDir = useWorldAxis ? local : transform.TransformDirection(local);
 
-        float sqrMag = moveDir.sqrMagnitude;
-        if (minInputMagnitude > 0f)
-        {
-            float threshold = Mathf.Clamp01(minInputMagnitude);
-            float thresholdSqr = threshold * threshold;
-            _hasMoveInput = sqrMag > thresholdSqr;
-        }
-        else
-        {
-            _hasMoveInput = sqrMag > 0.01f;
-        }
-
+        float deadSqr = minInputMagnitude > 0f
+            ? Mathf.Clamp01(minInputMagnitude) * Mathf.Clamp01(minInputMagnitude)
+            : 0.01f;
+        _hasMoveInput = moveDir.sqrMagnitude > deadSqr;
         _pendingMoveDir = _hasMoveInput ? moveDir.normalized : Vector3.zero;
 
-        // Fallback behavior: if Rigidbody movement isn't possible, keep original transform-based movement.
         if (!_hasMoveInput) return;
         if (useRigidbodyMovement && _rb != null) return;
         if (!fallbackToTransformWhenNoRigidbody) return;
 
-        Vector3 delta = _pendingMoveDir * (moveSpeed * Time.deltaTime);
-        transform.position += delta;
-
+        transform.position += _pendingMoveDir * (moveSpeed * Time.deltaTime);
         if (clampPosition)
         {
             Vector3 p = transform.position;
             transform.position = new Vector3(
                 Mathf.Clamp(p.x, positionMin.x, positionMax.x),
                 Mathf.Clamp(p.y, positionMin.y, positionMax.y),
-                Mathf.Clamp(p.z, positionMin.z, positionMax.z)
-            );
+                Mathf.Clamp(p.z, positionMin.z, positionMax.z));
         }
+    }
+
+    static void StopIfLeavingBounds(ref float vel, float next, float min, float max)
+    {
+        if ((next < min && vel < 0f) || (next > max && vel > 0f)) vel = 0f;
     }
 
     void FixedUpdate()
     {
         if (!useRigidbodyMovement || _rb == null) return;
 
-        // 用速度控制水平移动，保留竖直速度，避免 MovePosition 把重力“清零”导致下沉/穿地
         Vector3 vel = _rb.linearVelocity;
         if (movementPlane == MovementPlane.XZ)
         {
             vel.x = _pendingMoveDir.x * moveSpeed;
             vel.z = _pendingMoveDir.z * moveSpeed;
-            // vel.y 保持原样，交给重力和地面碰撞
         }
         else
         {
@@ -171,15 +131,52 @@ public class JoystickMovement : MonoBehaviour
 
         if (clampPosition)
         {
-            Vector3 nextPos = _rb.position + vel * Time.fixedDeltaTime;
-            if (nextPos.x < positionMin.x && vel.x < 0f) vel.x = 0f;
-            if (nextPos.x > positionMax.x && vel.x > 0f) vel.x = 0f;
-            if (nextPos.y < positionMin.y && vel.y < 0f) vel.y = 0f;
-            if (nextPos.y > positionMax.y && vel.y > 0f) vel.y = 0f;
-            if (nextPos.z < positionMin.z && vel.z < 0f) vel.z = 0f;
-            if (nextPos.z > positionMax.z && vel.z > 0f) vel.z = 0f;
+            Vector3 n = _rb.position + vel * Time.fixedDeltaTime;
+            StopIfLeavingBounds(ref vel.x, n.x, positionMin.x, positionMax.x);
+            StopIfLeavingBounds(ref vel.y, n.y, positionMin.y, positionMax.y);
+            StopIfLeavingBounds(ref vel.z, n.z, positionMin.z, positionMax.z);
         }
 
         _rb.linearVelocity = vel;
+    }
+
+    void LateUpdate()
+    {
+        if (faceMovementDirection && _hasMoveInput)
+        {
+            Quaternion target = FacingFromWorldDir(_pendingMoveDir);
+            transform.rotation = faceRotationSpeedDegPerSec <= 0f
+                ? target
+                : Quaternion.RotateTowards(transform.rotation, target, faceRotationSpeedDegPerSec * Time.deltaTime);
+        }
+
+        if (animator != null && !string.IsNullOrEmpty(speedParameterName))
+            animator.SetFloat(_speedParamHash, PlanarSpeed());
+    }
+
+    Quaternion FacingFromWorldDir(Vector3 worldMoveDir)
+    {
+        if (movementPlane == MovementPlane.XZ)
+        {
+            Vector3 f = new Vector3(worldMoveDir.x, 0f, worldMoveDir.z);
+            if (f.sqrMagnitude < 1e-8f) return transform.rotation;
+            return Quaternion.LookRotation(f.normalized, Vector3.up);
+        }
+
+        Vector3 f2 = new Vector3(worldMoveDir.x, worldMoveDir.y, 0f);
+        if (f2.sqrMagnitude < 1e-8f) return transform.rotation;
+        return Quaternion.LookRotation(f2.normalized, Vector3.forward);
+    }
+
+    float PlanarSpeed()
+    {
+        if (useRigidbodyMovement && _rb != null)
+        {
+            Vector3 v = _rb.linearVelocity;
+            return movementPlane == MovementPlane.XZ
+                ? new Vector3(v.x, 0f, v.z).magnitude
+                : new Vector3(v.x, v.y, 0f).magnitude;
+        }
+        return (_pendingMoveDir * moveSpeed).magnitude;
     }
 }

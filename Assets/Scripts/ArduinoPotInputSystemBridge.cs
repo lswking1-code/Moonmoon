@@ -21,13 +21,13 @@ public class ArduinoPotInputSystemBridge : MonoBehaviour
 
         _device = (PotentiometerDevice)InputSystem.AddDevice(new InputDeviceDescription { interfaceName = "ArduinoPot", product = "Potentiometer" });
         Debug.Log("[ArduinoPotInputSystemBridge] Potentiometer device registered with Input System.");
-    }
+    }// Cursor AI generated
 
     void Update()
     {
         if (_device == null || potInput == null) return;
         InputSystem.QueueStateEvent(_device, new PotentiometerState { value = Mathf.Clamp01(potInput.GetNormalized()) });
-    }
+    }// Cursor AI generated
 
     void OnDisable()
     {
@@ -44,5 +44,5 @@ public class ArduinoPotInputSystemBridge : MonoBehaviour
         if (_device == null) return;
         try { if (_device.added) InputSystem.RemoveDevice(_device); }
         finally { _device = null; }
-    }
+    }// Cursor AI generated
 }
